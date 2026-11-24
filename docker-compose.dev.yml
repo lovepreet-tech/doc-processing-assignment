@@ -1,0 +1,72 @@
+# Dev override - adds live code mounts + auto-reload so you don't rebuild images
+# on every change. Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml watch
+#
+# `watch` (not `up`) is what makes the `develop.watch` blocks below active - it
+# runs `up` underneath and then keeps watching for file changes on top of it.
+# Bind mounts already give the api/workers live code sync for free, so `watch`
+# here is mainly for the case a mount can't cover: a dependency file changing
+# (pyproject.toml / package.json) triggers a full image rebuild automatically.
+services:
+  api:
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - uploaded_files:/app/uploaded_files
+      - .:/app
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /app
+          ignore: [frontend/, .git/, "**/__pycache__"]
+        - action: rebuild
+          path: pyproject.toml
+
+  worker-ingestion:
+    # celery has no built-in --reload, watchmedo restarts the worker on file changes
+    command: watchmedo auto-restart --directory=/app --pattern=*.py --recursive -- celery -A ingestion.celery_app worker --loglevel=info -Q ingestion
+    volumes:
+      - uploaded_files:/app/uploaded_files
+      - .:/app
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /app
+          ignore: [frontend/, .git/, "**/__pycache__"]
+        - action: rebuild
+          path: pyproject.toml
+
+  worker-extraction:
+    command: watchmedo auto-restart --directory=/app --pattern=*.py --recursive -- celery -A extraction.celery_app worker --loglevel=info -Q extraction
+    volumes:
+      - uploaded_files:/app/uploaded_files
+      - .:/app
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    develop:
+      watch:
+        - action: sync
+          path: .
+          target: /app
+          ignore: [frontend/, .git/, "**/__pycache__"]
+        - action: rebuild
+          path: pyproject.toml
+
+  frontend:
+    # bind-mount source so Vite's own hot-reload picks up changes without a rebuild
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    develop:
+      watch:
+        - action: sync
+          path: ./frontend
+          target: /app
+          ignore: [node_modules/]
+        - action: rebuild
+          path: ./frontend/package.json
